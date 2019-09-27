@@ -19,12 +19,13 @@ package org.springframework.cloud.config.server.environment;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Collections;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Set;
 import java.util.TreeMap;
 
 import javax.servlet.http.HttpServletResponse;
@@ -278,49 +279,44 @@ public class EnvironmentController {
 
 	private Map<String, Object> convertToProperties(Environment profiles) {
 
-		// Map of unique keys containing full map of properties for each unique
-		// key
-		Map<String, Map<String, Object>> map = new LinkedHashMap<>();
-		List<PropertySource> sources = new ArrayList<>(profiles.getPropertySources());
-		Collections.reverse(sources);
-		Map<String, Object> combinedMap = new TreeMap<>();
-		for (PropertySource source : sources) {
+		// Holds the final collapsed list of all key->valyes
+		TreeMap<String, Object> properties = new TreeMap<>();
+		Set<String> arrayPrefixes = new HashSet<>();
+
+		for (PropertySource source : profiles.getPropertySources()) {
+
+			Set<String> prefixesForThisSource = new HashSet<>();
 
 			@SuppressWarnings("unchecked")
-			Map<String, Object> value = (Map<String, Object>) source.getSource();
-			for (String key : value.keySet()) {
+			Map<String, Object> sourceMap = (Map<String, Object>) source.getSource();
+			for (Entry<String, Object> sourceEntry : sourceMap.entrySet()) {
+				String key = sourceEntry.getKey();
+				Object val = sourceEntry.getValue();
 
-				if (!key.contains("[")) {
+				// We're deal with an array - delete all larger keys
+				if (key.contains("[")) {
+					String keyPrefix = key.substring(0, key.indexOf("["));
 
-					// Not an array, add unique key to the map
-					combinedMap.put(key, value.get(key));
+					boolean firstTimeEver = arrayPrefixes.add(keyPrefix);
+					if (firstTimeEver) {
+						prefixesForThisSource.add(keyPrefix);
+						arrayPrefixes.add(keyPrefix);
+					}
 
+					// Only add to properties if this prefix is new for this source
+					if (prefixesForThisSource.contains(keyPrefix)) {
+						properties.put(key, val);
+					}
 				}
 				else {
-
-					// An existing array might have already been added to the property map
-					// of an unequal size to the current array. Replace the array key in
-					// the current map.
-					key = key.substring(0, key.indexOf("["));
-					Map<String, Object> filtered = new TreeMap<>();
-					for (String index : value.keySet()) {
-						if (index.startsWith(key + "[")) {
-							filtered.put(index, value.get(index));
-						}
-					}
-					map.put(key, filtered);
+					properties.putIfAbsent(key, val);
 				}
 			}
 
 		}
 
-		// Combine all unique keys for array values into the combined map
-		for (Entry<String, Map<String, Object>> entry : map.entrySet()) {
-			combinedMap.putAll(entry.getValue());
-		}
-
-		postProcessProperties(combinedMap);
-		return combinedMap;
+		postProcessProperties(properties);
+		return properties;
 	}
 
 	private void postProcessProperties(Map<String, Object> propertiesMap) {
